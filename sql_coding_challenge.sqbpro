@@ -1,0 +1,491 @@
+<?xml version="1.0" encoding="UTF-8"?><sqlb_project><db path="C:/Users/mcho1/Downloads/BrainTree_SQL_Coding_Challenge_Data_Analyst-master/data_csv/sql_coding_challenge.db" readonly="0" foreign_keys="1" case_sensitive_like="0" temp_store="0" wal_autocheckpoint="1000" synchronous="2"/><attached/><window><main_tabs open="structure browser query pragmas" current="2"/></window><tab_structure><column_width id="0" width="300"/><column_width id="1" width="0"/><column_width id="2" width="100"/><column_width id="3" width="1509"/><column_width id="4" width="0"/><expanded_item id="0" parent="1"/><expanded_item id="1" parent="1"/><expanded_item id="2" parent="1"/><expanded_item id="3" parent="1"/></tab_structure><tab_browse><current_table name="4,13:maincontinent_map"/><default_encoding codec=""/><browse_table_settings><table schema="main" name="continent_map" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_"><sort><column index="1" mode="0"/></sort><column_widths><column index="1" value="107"/><column index="2" value="118"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="continents" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_"><sort><column index="1" mode="1"/></sort><column_widths><column index="1" value="93"/><column index="2" value="98"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats><column index="1" value=""/></display_formats><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="countries" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_"><sort/><column_widths><column index="1" value="83"/><column index="2" value="300"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table><table schema="main" name="per_capita" show_row_id="0" encoding="" plot_x_axis="" unlock_view_pk="_rowid_"><sort><column index="1" mode="0"/></sort><column_widths><column index="1" value="83"/><column index="2" value="43"/><column index="3" value="95"/></column_widths><filter_values/><conditional_formats/><row_id_formats/><display_formats/><hidden_columns/><plot_y_axes/><global_filter/></table></browse_table_settings></tab_browse><tab_sql><sql name="SQL 1">-- Issues I've had creating this query
+-- Creating new columns but not being able to use them in the original query
+-- Is it because in creating a column in the original table, the column hasn't been created yet so it doesn't actually exist?
+-- I got around this by creating CTEs, three to be exact.
+-- Is it bad to create too many CTEs? Does it matter, efficiency wise? 
+-- Is the alternative doing sub-queries?
+
+-- Next issue - window functions, specifically using LAG() and ROW_NUMBER()
+-- I thought window functions was more complicated but it just turns out you can add them to your SELECT clause
+-- The hardest part is getting the syntax of FUNCTION() OVER (PARTITION BY &quot;column&quot; ORDER BY &quot;column&quot; part down
+-- I need to wrap my head around the PARTITION... section and really understand what's being used and sorted in regards the window function being used
+
+-- Next issue - certain functions do not exist in sqlite vs mysql
+-- I don't think this is a huge deal, I just have to be aware of when functions do not work and find the one that is simliar in the SQL style I'm using
+-- i.e. concat() in sqlite does not exist, instead it uses str1 || str2
+
+-- Next issue - sorted numbers are not sorted properly descending - single digits are sorted higher than multi-digit number even though they're higher numerically
+-- i.e. 6.12% &gt; 33.83%
+-- I need to look at my CTE that computes the percentages and see if that's being sorted properly
+-- I fixed this by only sorting the decimal first, then converting it later in the query
+
+-- Next issue - using the ROW_NUMBER() window function
+-- I need to get a handle on the PARTION... and ORDER... part of the window function to properly sort by year over year percent DESC and continent name
+-- so the countries in the same continent are sorted together, so I can properly rank them by their yoy %
+
+WITH country AS (
+SELECT 
+c.country_code, 
+c.country_name, 
+cn.continent_name
+FROM countries c
+JOIN continent_map cnm ON c.country_code = cnm.country_code
+JOIN continents cn ON cnm.continent_code = cn.continent_code),
+
+yoy AS (SELECT 
+country_code, 
+year,
+gdp_per_capita AS current_year,
+LAG(gdp_per_capita) OVER (ORDER BY country_code) as previous_year,
+CASE WHEN LAG(country_code,1) OVER (ORDER BY country_code) = country_code THEN gdp_per_capita - LAG(gdp_per_capita)OVER (ORDER BY country_code) ELSE null END as year_subtract_previous
+FROM per_capita
+WHERE year BETWEEN 2011 AND 2012
+ORDER BY country_code ASC, year ASC),
+
+yoy_percent AS (SELECT
+--ROW_NUMBER() OVER(PARTITION BY continent_name ORDER BY continent_name DESC) as rank, 
+-- need to sort the rank by yoy_percent DESC but not sure how to do that
+c.continent_name,
+c.country_code,
+c.country_name,
+(yoy.year_subtract_previous / yoy.previous_year) AS year_over_year_percent
+--sql lite does not have concat, need to use ||
+FROM yoy
+JOIN country c on yoy.country_code = c.country_code
+WHERE year_over_year_percent IS NOT NULL
+ORDER BY c.continent_name ASC),
+
+-- I need to sort by yoy_% DESC by continent to get accurate rank
+
+countries_rank AS (SELECT 
+ROW_NUMBER() OVER(PARTITION BY yoy_percent.continent_name ORDER BY yoy_percent.year_over_year_percent DESC) as rank,
+yoy_percent.*
+FROM yoy_percent
+ORDER BY yoy_percent.continent_name, yoy_percent.year_over_year_percent DESC)
+
+SELECT 
+countries_rank.rank as rank,
+countries_rank.continent_name,
+countries_rank.country_code,
+countries_rank.country_name,
+(ROUND((countries_rank.year_over_year_percent),2) * 100) || '%' as year_over_year
+FROM countries_rank
+WHERE rank BETWEEN 10 AND 12
+ORDER BY continent_name</sql><sql name="SQL 2">-- this is to figure out the sorting issue using decimals vs percentages
+
+WITH country AS (
+SELECT 
+c.country_code, 
+c.country_name, 
+cn.continent_name
+FROM countries c
+JOIN continent_map cnm ON c.country_code = cnm.country_code
+JOIN continents cn ON cnm.continent_code = cn.continent_code),
+
+yoy AS (SELECT 
+country_code, 
+year,
+gdp_per_capita AS current_year,
+LAG(gdp_per_capita) OVER (ORDER BY country_code) as previous_year,
+CASE WHEN LAG(country_code,1) OVER (ORDER BY country_code) = country_code THEN gdp_per_capita - LAG(gdp_per_capita)OVER (ORDER BY country_code) ELSE null END as year_subtract_previous
+FROM per_capita
+WHERE year BETWEEN 2011 AND 2012
+ORDER BY country_code ASC, year ASC)
+
+SELECT
+--ROW_NUMBER() OVER(PARTITION BY continent_name ORDER BY continent_name DESC) as rank, 
+-- need to sort the rank by yoy_percent DESC but not sure how to do that
+c.continent_name,
+c.country_code,
+c.country_name,
+ROUND((yoy.year_subtract_previous / yoy.previous_year),2) AS year_over_year_percent,
+ROUND((yoy.year_subtract_previous / yoy.previous_year),2) || '%' AS year_over_year_percent_1,
+(yoy.year_subtract_previous / yoy.previous_year) AS yoy_percent_unrounded
+--sql lite does not have concat, need to use ||
+FROM yoy
+JOIN country c on yoy.country_code = c.country_code
+WHERE year_over_year_percent IS NOT NULL
+ORDER BY c.continent_name ASC, year_over_year_percent_1 DESC</sql><sql name="SQL 3">-- WITH country AS (
+-- SELECT 
+-- c.country_code, 
+-- c.country_name, 
+-- cn.continent_name
+-- FROM countries c
+-- JOIN continent_map cnm ON c.country_code = cnm.country_code
+-- JOIN continents cn ON cnm.continent_code = cn.continent_code),
+
+-- Upon creating aggregates, Europe had NULL so I went back to check if Europe had any gdp_per_capita in 2012.
+-- Since it did, I am trying to remove any NULL values and see if that affects things
+
+-- I forgot to add sum() so it was only showing the gdp_per_capita of the first row
+
+-- maybe this is a sql lite peculiarity but at the bottom of this table, it shows continent_name on the bottom of the table. I don't think I'm entering a blank row.
+
+-- how many arguments can SUM() have?
+-- I used &quot;+&quot; instead
+
+-- WITH total_gdp AS (SELECT 
+-- --cn.continent_name,
+-- ROUND(SUM(p.gdp_per_capita),2) as total_sum_gdp
+-- FROM per_capita p
+-- JOIN continent_map c ON p.country_code = c.country_code
+-- JOIN continents cn ON c.continent_code = cn.continent_code),
+-- --GROUP BY cn.continent_code),
+
+WITH world_gdp AS (SELECT 
+cn.continent_name,
+-- ROUND(SUM(p.gdp_per_capita),2) as total_sum_gdp,
+CASE WHEN continent_name = 'Africa' THEN SUM(p.gdp_per_capita) ELSE 0 END as af_gdp,
+CASE WHEN continent_name = 'Asia' THEN SUM(p.gdp_per_capita) ELSE 0 END as as_gdp,
+CASE WHEN continent_name = 'Europe' THEN SUM(p.gdp_per_capita) ELSE 0 END as eu_gdp,
+CASE WHEN continent_name = 'North America' THEN SUM(p.gdp_per_capita) ELSE 0 END as na_gdp,
+CASE WHEN continent_name = 'Oceania' THEN SUM(p.gdp_per_capita) ELSE 0 END as oc_gdp,
+CASE WHEN continent_name = 'South America' THEN SUM(p.gdp_per_capita) ELSE 0 END as sa_gdp
+FROM per_capita p
+JOIN continent_map c ON p.country_code = c.country_code
+JOIN continents cn ON c.continent_code = cn.continent_code
+GROUP BY cn.continent_name),
+
+totals AS (SELECT 
+SUM(world_gdp.af_gdp + world_gdp.as_gdp+world_gdp.eu_gdp+world_gdp.na_gdp+world_gdp.oc_gdp+world_gdp.sa_gdp) as world_total_gdp,
+SUM(world_gdp.as_gdp+world_gdp.oc_gdp) as asia_total_gdp,
+SUM(world_gdp.eu_gdp) as europe_total_gdp,
+SUM(world_gdp.af_gdp +world_gdp.na_gdp++world_gdp.sa_gdp) as rest_of_world_total_gdp
+FROM world_gdp)
+
+SELECT
+(ROUND((totals.asia_total_gdp / totals.world_total_gdp),2)*100) ||'%' AS Asia,
+(ROUND((totals.europe_total_gdp / totals.world_total_gdp),2)*100)||'%' AS Eruope,
+(ROUND((totals.rest_of_world_total_gdp / totals.world_total_gdp),2)*100) ||'%' AS rest_of_world
+FROM totals
+
+
+
+</sql><sql name="SQL 4">-- case insensitive
+PRAGMA case_sensitive_like=OFF;
+SELECT
+COUNT(c.country_name) as an_countries_count,
+CASE WHEN p.gdp_per_capita IS NOT NULL THEN ('$'||ROUND(SUM(p.gdp_per_capita),2)) ELSE 0 END as total_gdp
+FROM per_capita p
+JOIN countries c ON p.country_code = p.country_code
+WHERE c.country_name LIKE '%an%'
+AND year = 2007
+
+
+-- to make it case sensitive for sqlite, change PRAGMA case_sensitive_like=ON;
+PRAGMA case_sensitive_like=ON;
+SELECT
+COUNT(c.country_name) as an_countries_count,
+CASE WHEN p.gdp_per_capita IS NOT NULL THEN ('$'||ROUND(SUM(p.gdp_per_capita),2)) ELSE 0 END as total_gdp
+FROM per_capita p
+JOIN countries c ON p.country_code = p.country_code
+WHERE c.country_name LIKE '%an%'
+AND year = 2007
+
+
+
+
+</sql><sql name="SQL 5">-- Create a CTE with only countries that have NULL for gdp in 2012
+-- then left join the primary table of per_capita with the CTE table
+
+WITH country_null AS (SELECT 
+country_code
+FROM per_capita
+WHERE year = 2012
+AND gdp_per_capita IS NULL)
+
+SELECT
+year,
+COUNT(p.country_code) as country_count,
+'$'||ROUND(SUM(gdp_per_capita),2) as total_gdp
+FROM country_null c
+LEFT JOIN per_capita p ON c.country_code = p.country_code
+WHERE year &lt; 2012
+GROUP BY year
+
+-- SELECT
+-- year,
+-- p.country_code,
+-- gdp_per_capita
+-- FROM per_capita p
+-- LEFT JOIN country_null c ON c.country_code = p.country_code
+-- ORDER BY p.country_code
+
+
+-- SELECT 
+-- year,
+-- COUNT(country_code) as country_count,
+-- SUM(gdp_per_capita) as total_gdp
+-- FROM per_capita
+-- WHERE year &lt; 2012
+-- AND gdp_per_capita IS NOT NULL
+-- GROUP BY year
+
+
+</sql><sql name="SQL 6">-- I'm assuming by a &quot;single list&quot;, they mean a table
+-- to have a running total, I believe I need a window function of SUM() where it sorts by continent_name
+-- Issue - running total isn't summing properly, instead it is just giving the sum of all the rows in a specific continent
+-- I need to figure out how to sort it so it sums in the way I want it to
+-- I think this is a deeper drive into sorting for window functions and what partition by does and order by inside a window function does
+
+-- one solution is to create a CTE for each continent that's sorted and ranked
+-- combine all those CTEs together with a UNION
+-- There's no sorting in the UNION though, unless I make it it's own CTE and create a new table from that
+
+-- For sqlite, when using UNION and LIMIT, you can use parenthesis for as a subquery with a LIMIT then add UNION afterwards
+-- i.e (SELECT * FROM data LIMIT 1) UNION (SELECT...
+
+WITH names AS (SELECT
+c.country_code,
+c.country_name,
+cont.continent_name
+FROM countries c
+JOIN continent_map m ON c.country_code = m.country_code
+JOIN continents cont ON m.continent_code = cont.continent_code),
+
+africa AS (SELECT 
+n.continent_name,
+n.country_code,
+n.country_name,
+gdp_per_capita,
+--ROW_NUMBER() OVER (PARTITION BY n.continent_name) as row_number,
+SUM(gdp_per_capita) OVER (ORDER BY SUBSTR(n.country_name,2,2) DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total
+FROM per_capita p
+JOIN names n ON p.country_code = n.country_code
+WHERE year = 2009
+AND n.continent_name = 'Africa'
+AND gdp_per_capita IS NOT NULL
+--ORDER BY continent_name ASC
+ORDER BY n.continent_name ASC, SUBSTR(n.country_name,2,2) DESC),
+
+south_america as (SELECT 
+n.continent_name,
+n.country_code,
+n.country_name,
+gdp_per_capita,
+--ROW_NUMBER() OVER (PARTITION BY n.continent_name) as row_number,
+SUM(gdp_per_capita) OVER (ORDER BY SUBSTR(n.country_name,2,2) DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total
+FROM per_capita p
+JOIN names n ON p.country_code = n.country_code
+WHERE year = 2009
+AND n.continent_name = 'South America'
+AND gdp_per_capita IS NOT NULL
+--ORDER BY continent_name ASC
+ORDER BY n.continent_name ASC, SUBSTR(n.country_name,2,2) DESC),
+
+oceania AS (SELECT 
+n.continent_name,
+n.country_code,
+n.country_name,
+gdp_per_capita,
+--ROW_NUMBER() OVER (PARTITION BY n.continent_name) as row_number,
+SUM(gdp_per_capita) OVER (ORDER BY SUBSTR(n.country_name,2,2) DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total
+FROM per_capita p
+JOIN names n ON p.country_code = n.country_code
+WHERE year = 2009
+AND n.continent_name = 'Oceania'
+AND gdp_per_capita IS NOT NULL
+--ORDER BY continent_name ASC
+ORDER BY n.continent_name ASC, SUBSTR(n.country_name,2,2) DESC),
+
+north_america AS (SELECT 
+n.continent_name,
+n.country_code,
+n.country_name,
+gdp_per_capita,
+--ROW_NUMBER() OVER (PARTITION BY n.continent_name) as row_number,
+SUM(gdp_per_capita) OVER (ORDER BY SUBSTR(n.country_name,2,2) DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total
+FROM per_capita p
+JOIN names n ON p.country_code = n.country_code
+WHERE year = 2009
+AND n.continent_name = 'North America'
+AND gdp_per_capita IS NOT NULL
+--ORDER BY continent_name ASC
+ORDER BY n.continent_name ASC, SUBSTR(n.country_name,2,2) DESC),
+
+europe AS (SELECT 
+n.continent_name,
+n.country_code,
+n.country_name,
+gdp_per_capita,
+--ROW_NUMBER() OVER (PARTITION BY n.continent_name) as row_number,
+SUM(gdp_per_capita) OVER (ORDER BY SUBSTR(n.country_name,2,2) DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total
+FROM per_capita p
+JOIN names n ON p.country_code = n.country_code
+WHERE year = 2009
+AND n.continent_name = 'Oceania'
+AND gdp_per_capita IS NOT NULL
+--ORDER BY continent_name ASC
+ORDER BY n.continent_name ASC, SUBSTR(n.country_name,2,2) DESC),
+
+asia as (SELECT 
+n.continent_name,
+n.country_code,
+n.country_name,
+gdp_per_capita,
+--ROW_NUMBER() OVER (PARTITION BY n.continent_name) as row_number,
+SUM(gdp_per_capita) OVER (ORDER BY SUBSTR(n.country_name,2,2) DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as running_total
+FROM per_capita p
+JOIN names n ON p.country_code = n.country_code
+WHERE year = 2009
+AND n.continent_name = 'Oceania'
+AND gdp_per_capita IS NOT NULL
+--ORDER BY continent_name ASC
+ORDER BY n.continent_name ASC, SUBSTR(n.country_name,2,2) DESC),
+
+
+-- SELECT south_america.continent_name, south_america.country_code, south_america.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM south_america WHERE running_total &gt; 70000 LIMIT 1
+
+sventy_thou AS 
+(SELECT * FROM (SELECT south_america.continent_name, south_america.country_code, south_america.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM south_america WHERE running_total &gt;= 70000 LIMIT 1)
+UNION
+SELECT * FROM  (SELECT oceania.continent_name, oceania.country_code, oceania.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM oceania WHERE running_total &gt;= 70000 LIMIT 1)
+UNION
+SELECT * FROM  (SELECT north_america.continent_name, north_america.country_code, north_america.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM north_america WHERE running_total &gt;= 70000 LIMIT 1)
+UNION
+SELECT * FROM  (SELECT europe.continent_name, europe.country_code, europe.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM europe WHERE running_total &gt;= 70000 LIMIT 1)
+UNION
+SELECT * FROM  (SELECT asia.continent_name, asia.country_code, asia.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM asia WHERE running_total &gt;= 70000 LIMIT 1)
+UNION
+SELECT * FROM  (SELECT africa.continent_name, africa.country_code, africa.country_name, '$'||ROUND(gdp_per_capita,2) as gdp_per_capita, '$'||ROUND(running_total,2) AS running_total FROM africa WHERE running_total &gt;= 70000 LIMIT 1)
+)
+
+SELECT *
+FROM sventy_thou
+ORDER BY sventy_thou.continent_name ASC
+</sql><sql name="SQL 14">WITH names AS (SELECT
+c.country_code,
+c.country_name,
+cont.continent_name
+FROM countries c
+JOIN continent_map m ON c.country_code = m.country_code
+JOIN continents cont ON m.continent_code = cont.continent_code),
+
+-- SELECT
+-- n.country_name,
+-- n.country_code,
+-- n.continent_name,
+-- -- g.gdp_per_capita
+-- '$'||ROUND(AVG(g.gdp_per_capita),2) as average_gdp
+-- FROM per_capita g
+-- JOIN names n ON n.country_code = g.country_code
+-- WHERE gdp_per_capita IS NOT NULL
+-- GROUP BY n.country_name, n.continent_name
+-- ORDER BY n.continent_name
+
+avg_gdp AS (SELECT
+-- g.year,
+n.country_name,
+n.country_code,
+n.continent_name,
+-- g.gdp_per_capita
+AVG(g.gdp_per_capita) as average_gdp
+FROM per_capita g
+JOIN names n ON n.country_code = g.country_code
+-- WHERE gdp_per_capita IS NOT NULL
+GROUP BY n.country_name, n.continent_name
+ORDER BY n.continent_name),
+
+-- SELECT 
+-- *,
+-- '$'||ROUND(average_gdp,2) as average_gdp,
+-- ROW_NUMBER() OVER (PARTITION BY a.continent_name ORDER BY a.average_gdp DESC) as row_number
+-- FROM avg_gdp a
+-- ORDER BY a.continent_name, a.average_gdp DESC
+-- 
+ranking AS (SELECT 
+*,
+'$'||ROUND(average_gdp,2) as average_gdp_rounded,
+ROW_NUMBER() OVER (PARTITION BY a.continent_name ORDER BY a.average_gdp DESC) as row_number
+FROM avg_gdp a
+ORDER BY a.continent_name, a.average_gdp DESC)
+
+SELECT row_number as rank, continent_name,country_code, country_name, average_gdp_rounded as average_gdp
+FROM ranking
+WHERE row_number = 1
+
+-- issues with the table from the questions vs my answer
+-- Africa's highest GDP belongs to Equatorial Guinea, not Seychelles
+-- Asia's highest GDP belongs to Qatar, not Kuwait
+-- Austraila's GDP average is wrong compared to my answer
+
+
+
+</sql><sql name="SQL 16">WITH names AS (SELECT
+c.country_code,
+c.country_name,
+cont.continent_name
+FROM countries c
+JOIN continent_map m ON c.country_code = m.country_code
+JOIN continents cont ON m.continent_code = cont.continent_code)
+
+SELECT
+g.year,
+n.country_name,
+n.country_code,
+n.continent_name,
+g.gdp_per_capita,
+AVG(g.gdp_per_capita) OVER (ORDER BY year ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as rolling_average_gdp,
+AVG(g.gdp_per_capita) OVER (ORDER BY year DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as rev_rolling_average_gdp
+FROM per_capita g
+JOIN names n ON n.country_code = g.country_code
+WHERE n.country_name = 'Australia'
+-- WHERE gdp_per_capita IS NOT NULL
+-- GROUP BY n.country_name, n.continent_name
+ORDER BY n.continent_name
+
+-- Austraila's GDP average is wrong compared to my answer
+-- The average for Australia was not calculated properly but as you can see from the rolling average, the average cannot be obtained
+-- The error could be additional data was used in the incorrect averaging</sql><sql name="SQL 17">WITH names AS (SELECT
+c.country_code,
+c.country_name,
+cont.continent_name
+FROM countries c
+JOIN continent_map m ON c.country_code = m.country_code
+JOIN continents cont ON m.continent_code = cont.continent_code),
+
+avg_gdp AS (SELECT
+-- g.year,
+n.country_name,
+n.country_code,
+n.continent_name,
+-- g.gdp_per_capita,
+AVG(g.gdp_per_capita) as average_gdp
+FROM per_capita g
+JOIN names n ON n.country_code = g.country_code
+WHERE n.continent_name= 'Africa'
+-- WHERE gdp_per_capita IS NOT NULL
+GROUP BY n.country_name, n.continent_name
+ORDER BY n.continent_name)
+
+SELECT *, ROW_NUMBER() OVER (ORDER BY average_gdp DESC) as ranking
+FROM avg_gdp
+
+-- Africa's highest GDP belongs to Equatorial Guinea, not Seychelles
+-- Based on the average_gpd and ranking, Equatorial Guinea has the highest average_gdp, not Seychelles</sql><sql name="SQL 11">WITH names AS (SELECT
+c.country_code,
+c.country_name,
+cont.continent_name
+FROM countries c
+JOIN continent_map m ON c.country_code = m.country_code
+JOIN continents cont ON m.continent_code = cont.continent_code),
+
+avg_gdp AS (SELECT
+-- g.year,
+n.country_name,
+n.country_code,
+n.continent_name,
+-- g.gdp_per_capita,
+AVG(g.gdp_per_capita) as average_gdp
+FROM per_capita g
+JOIN names n ON n.country_code = g.country_code
+WHERE n.continent_name= 'Asia'
+-- WHERE gdp_per_capita IS NOT NULL
+GROUP BY n.country_name, n.continent_name
+ORDER BY n.continent_name)
+
+SELECT *, ROW_NUMBER() OVER (ORDER BY average_gdp DESC) as ranking
+FROM avg_gdp
+
+-- Asia's highest GDP belongs to Qatar, not Kuwait
+-- Based on the ranking and average GDP, Qatar is the highest ranked, not Kuwait, which is not even first but third</sql><current_tab id="1"/></tab_sql></sqlb_project>
